@@ -711,7 +711,7 @@ static int tve_parse_dt(struct device_node *np, struct rockchip_tve *tve)
 
 	ret = of_property_read_u32(np, "rockchip,tvemode", &val);
 	if (ret < 0) {
-		tve->preferred_mode = 0;
+		val = 0;
 	} else if (val > 1) {
 		dev_err(tve->dev, "tve mode value invalid\n");
 		return -EINVAL;
@@ -802,7 +802,7 @@ static int tve_parse_dt_legacy(struct device_node *np, struct rockchip_tve *tve)
 
 	ret = of_property_read_u32(np, "rockchip,tvemode", &val);
 	if (ret < 0) {
-		tve->preferred_mode = 0;
+		val = 0;
 	} else if (val > 1) {
 		dev_err(tve->dev, "tve mode value invalid\n");
 		return -EINVAL;
