@@ -3679,6 +3679,23 @@ static void vop2_setup_scale(struct vop2 *vop2, struct vop2_win *win,
 		vscl_filter_mode = win_data->vsd_filter_mode;
 
 	/*
+	 * The per-window defaults above are interpolating filters, which is the
+	 * right choice for video but destroys a pixel-exact integer upscale --
+	 * a fixed-resolution game presented on a larger panel, say. A client
+	 * asks for the alternative through the standard SCALING_FILTER plane
+	 * property, which selects the hardware's nearest-neighbour mode.
+	 *
+	 * The CbCr path below reuses these two variables, so YUV formats are
+	 * covered by the same override.
+	 */
+	if (pstate->scaling_filter == DRM_SCALING_FILTER_NEAREST_NEIGHBOR) {
+		hscl_filter_mode = (yrgb_hor_scl_mode == SCALE_UP) ?
+			VOP2_SCALE_UP_NRST_NBOR : VOP2_SCALE_DOWN_NRST_NBOR;
+		vscl_filter_mode = (yrgb_ver_scl_mode == SCALE_UP) ?
+			VOP2_SCALE_UP_NRST_NBOR : VOP2_SCALE_DOWN_NRST_NBOR;
+	}
+
+	/*
 	 * RK3568 VOP Esmart/Smart dsp_w should be even pixel
 	 * at scale down mode
 	 */
@@ -18098,6 +18115,9 @@ static int vop2_plane_init(struct vop2 *vop2, struct vop2_win *win, unsigned lon
 	drm_plane_create_alpha_property(&win->base);
 	drm_plane_create_blend_mode_property(&win->base, blend_caps);
 	drm_plane_create_zpos_property(&win->base, win->win_id, 0, vop2->registered_num_wins - 1);
+	drm_plane_create_scaling_filter_property(&win->base,
+						 BIT(DRM_SCALING_FILTER_DEFAULT) |
+						 BIT(DRM_SCALING_FILTER_NEAREST_NEIGHBOR));
 	vop2_plane_create_name_property(vop2, win);
 	vop2_plane_create_feature_property(vop2, win);
 	if (win->feature & WIN_FEATURE_DCI)
