@@ -4,7 +4,10 @@
  * Author:Mark Yao <mark.yao@rock-chips.com>
  */
 
+#include <linux/moduleparam.h>
+
 #include <drm/drm.h>
+#include <drm/drm_connector.h>
 #include <drm/drm_fb_helper.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_probe_helper.h>
@@ -15,6 +18,43 @@
 #include "rockchip_drm_fbdev.h"
 
 #define PREFERRED_BPP		32
+
+static unsigned int fbdev_tv_margin = 80;
+module_param(fbdev_tv_margin, uint, 0444);
+MODULE_PARM_DESC(fbdev_tv_margin,
+		 "percent of a TV connector's mode the console occupies (100 disables)");
+
+/*
+ * A television overscans, so the edges of a full-size console are not on the
+ * tube at all. Lay fbcon out smaller and start it part-way into the buffer:
+ * the plane still scans the whole mode out 1:1, so nothing is scaled, and a
+ * KMS client that allocates its own buffers never sees this.
+ */
+static bool rockchip_fbdev_console_on_tv(struct drm_device *dev)
+{
+	struct drm_connector_list_iter conn_iter;
+	struct drm_connector *connector;
+	bool tv = false, other = false;
+
+	if (fbdev_tv_margin >= 100 || fbdev_tv_margin < 50)
+		return false;
+
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter) {
+		if (connector->connector_type == DRM_MODE_CONNECTOR_TV)
+			tv = true;
+		else if (connector->connector_type != DRM_MODE_CONNECTOR_WRITEBACK &&
+			 connector->status == connector_status_connected)
+			other = true;
+	}
+	drm_connector_list_iter_end(&conn_iter);
+
+	/* A TV encoder has no detect line and always reads connected, so this
+	 * asks whether anything else is driving the console, not whether a
+	 * cable is in the socket.
+	 */
+	return tv && !other;
+}
 
 static int rockchip_fbdev_mmap(struct fb_info *info,
 			       struct vm_area_struct *vma)
@@ -87,6 +127,25 @@ static int rockchip_drm_fbdev_create(struct drm_fb_helper *helper,
 
 	offset = fbi->var.xoffset * bytes_per_pixel;
 	offset += fbi->var.yoffset * fb->pitches[0];
+
+	if (rockchip_fbdev_console_on_tv(dev)) {
+		unsigned int w = (fbi->var.xres * fbdev_tv_margin / 100) & ~1U;
+		unsigned int h = (fbi->var.yres * fbdev_tv_margin / 100) & ~1U;
+
+		offset += ((fbi->var.yres - h) / 2) * fb->pitches[0];
+		offset += ((fbi->var.xres - w) / 2) * bytes_per_pixel;
+
+		/* fix.line_length stays the full pitch, so each console row
+		 * still steps one whole scanline of the larger buffer.
+		 */
+		fbi->var.xres = w;
+		fbi->var.yres = h;
+		fbi->var.xres_virtual = w;
+		fbi->var.yres_virtual = h;
+
+		DRM_DEV_INFO(dev->dev, "console inset to %ux%u for the TV connector\n",
+			     w, h);
+	}
 
 	dev->mode_config.fb_base = 0;
 	fbi->screen_base = rk_obj->kvaddr + offset;
