@@ -154,11 +154,32 @@ rockchip_tve_get_modes(struct drm_connector *connector)
 	return count;
 }
 
+/*
+ * The encoder drives CVBS and nothing else: the two entries in cvbs_mode[] are
+ * the only timings it can produce. A client is free to invent a mode and hand
+ * it straight to an atomic commit, so both the probe-time list and the commit
+ * path have to be told that.
+ */
+static bool rockchip_tve_mode_is_cvbs(const struct drm_display_mode *mode)
+{
+	int i;
+
+	if (!(mode->flags & DRM_MODE_FLAG_INTERLACE))
+		return false;
+
+	for (i = 0; i < ARRAY_SIZE(cvbs_mode); i++)
+		if (mode->hdisplay == cvbs_mode[i].hdisplay &&
+		    mode->vdisplay == cvbs_mode[i].vdisplay)
+			return true;
+
+	return false;
+}
+
 static enum drm_mode_status
 rockchip_tve_mode_valid(struct drm_connector *connector,
 			struct drm_display_mode *mode)
 {
-	return MODE_OK;
+	return rockchip_tve_mode_is_cvbs(mode) ? MODE_OK : MODE_BAD;
 }
 
 static struct drm_encoder *rockchip_tve_best_encoder(struct drm_connector
@@ -555,6 +576,12 @@ rockchip_tve_encoder_atomic_check(struct drm_encoder *encoder,
 	struct rockchip_tve *tve = encoder_to_tve(encoder);
 	struct drm_connector *connector = conn_state->connector;
 	struct drm_display_info *info = &connector->display_info;
+
+	if (!rockchip_tve_mode_is_cvbs(&crtc_state->adjusted_mode)) {
+		dev_dbg(tve->dev, "%s is not a CVBS mode\n",
+			crtc_state->adjusted_mode.name);
+		return -EINVAL;
+	}
 
 	s->output_mode = ROCKCHIP_OUT_MODE_P888;
 	s->output_type = DRM_MODE_CONNECTOR_TV;
