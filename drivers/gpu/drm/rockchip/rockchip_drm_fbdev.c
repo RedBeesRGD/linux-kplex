@@ -7,7 +7,8 @@
 #include <linux/moduleparam.h>
 
 #include <drm/drm.h>
-#include <drm/drm_connector.h>
+#include <drm/drm_client.h>
+#include <drm/drm_crtc.h>
 #include <drm/drm_fb_helper.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_probe_helper.h>
@@ -26,34 +27,39 @@ MODULE_PARM_DESC(fbdev_tv_margin,
 
 /*
  * A television overscans, so the edges of a full-size console are not on the
- * tube at all. Lay fbcon out smaller and start it part-way into the buffer:
- * the plane still scans the whole mode out 1:1, so nothing is scaled, and a
- * KMS client that allocates its own buffers never sees this.
+ * tube at all. Lay fbcon out smaller and start it part-way into the buffer: the
+ * plane still scans the whole mode out 1:1, so nothing is scaled, and a KMS
+ * client that allocates its own buffers never sees this.
+ *
+ * What matters is where the console is actually displayed, which the client's
+ * probed modesets answer directly. A connector-status test cannot: a TV encoder
+ * has no detect line and always reads connected, so it would inset an HDMI
+ * console too.
  */
-static bool rockchip_fbdev_console_on_tv(struct drm_device *dev)
+static bool rockchip_fbdev_console_on_tv(struct drm_fb_helper *helper)
 {
-	struct drm_connector_list_iter conn_iter;
-	struct drm_connector *connector;
-	bool tv = false, other = false;
+	struct drm_mode_set *modeset;
+	bool tv_only = false;
+	unsigned int i;
 
 	if (fbdev_tv_margin >= 100 || fbdev_tv_margin < 50)
 		return false;
 
-	drm_connector_list_iter_begin(dev, &conn_iter);
-	drm_for_each_connector_iter(connector, &conn_iter) {
-		if (connector->connector_type == DRM_MODE_CONNECTOR_TV)
-			tv = true;
-		else if (connector->connector_type != DRM_MODE_CONNECTOR_WRITEBACK &&
-			 connector->status == connector_status_connected)
-			other = true;
+	mutex_lock(&helper->client.modeset_mutex);
+	drm_client_for_each_modeset(modeset, &helper->client) {
+		for (i = 0; i < modeset->num_connectors; i++) {
+			if (modeset->connectors[i]->connector_type !=
+			    DRM_MODE_CONNECTOR_TV) {
+				tv_only = false;
+				goto out;
+			}
+			tv_only = true;
+		}
 	}
-	drm_connector_list_iter_end(&conn_iter);
+out:
+	mutex_unlock(&helper->client.modeset_mutex);
 
-	/* A TV encoder has no detect line and always reads connected, so this
-	 * asks whether anything else is driving the console, not whether a
-	 * cable is in the socket.
-	 */
-	return tv && !other;
+	return tv_only;
 }
 
 static int rockchip_fbdev_mmap(struct fb_info *info,
@@ -128,20 +134,19 @@ static int rockchip_drm_fbdev_create(struct drm_fb_helper *helper,
 	offset = fbi->var.xoffset * bytes_per_pixel;
 	offset += fbi->var.yoffset * fb->pitches[0];
 
-	if (rockchip_fbdev_console_on_tv(dev)) {
+	if (rockchip_fbdev_console_on_tv(helper)) {
 		unsigned int w = (fbi->var.xres * fbdev_tv_margin / 100) & ~1U;
 		unsigned int h = (fbi->var.yres * fbdev_tv_margin / 100) & ~1U;
 
 		offset += ((fbi->var.yres - h) / 2) * fb->pitches[0];
 		offset += ((fbi->var.xres - w) / 2) * bytes_per_pixel;
 
-		/* fix.line_length stays the full pitch, so each console row
-		 * still steps one whole scanline of the larger buffer.
+		/* xres_virtual and fix.line_length stay at the full framebuffer,
+		 * so a console row still steps one whole scanline of it -
+		 * drm_fb_helper_check_var() resets them on set_par regardless.
 		 */
 		fbi->var.xres = w;
 		fbi->var.yres = h;
-		fbi->var.xres_virtual = w;
-		fbi->var.yres_virtual = h;
 
 		DRM_DEV_INFO(dev->dev, "console inset to %ux%u for the TV connector\n",
 			     w, h);
